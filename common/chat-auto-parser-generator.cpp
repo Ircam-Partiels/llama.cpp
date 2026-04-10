@@ -350,17 +350,23 @@ common_peg_parser analyze_tools::build_tool_parser_tag_tagged(parser_build_conte
         auto                  params     = func.contains("parameters") ? func.at("parameters") : json::object();
         const auto &          properties = params.contains("properties") ? params.at("properties") : json::object();
 
-        std::set<std::string> required;
+        std::vector<std::string> required_order;
+        std::set<std::string>    required;
         if (params.contains("required")) {
-            params.at("required").get_to(required);
+            for (const auto & r : params.at("required")) {
+                auto rname = r.get<std::string>();
+                if (required.insert(rname).second) {
+                    required_order.push_back(rname);
+                }
+            }
         }
 
         auto schema_info = common_schema_info();
         schema_info.resolve_refs(params);
 
-        // Build parser for each argument, separating required and optional
-        std::vector<common_peg_parser> required_parsers;
-        std::vector<common_peg_parser> optional_parsers;
+        // Build parsers for all arguments; collect required ones by name for later ordering
+        std::map<std::string, common_peg_parser> required_parser_map;
+        std::vector<common_peg_parser>           optional_parsers;
         for (const auto & [param_name, param_schema] : properties.items()) {
             bool is_required = required.find(param_name) != required.end();
 
@@ -379,19 +385,69 @@ common_peg_parser analyze_tools::build_tool_parser_tag_tagged(parser_build_conte
 
             auto named_arg = p.rule("tool-" + name + "-arg-" + param_name, arg);
             if (is_required) {
-                required_parsers.push_back(named_arg);
+                required_parser_map.emplace(param_name, std::move(named_arg));
             } else {
-                optional_parsers.push_back(named_arg);
+                optional_parsers.push_back(std::move(named_arg));
             }
         }
 
-        // Build required arg sequence in definition order
-        common_peg_parser args_seq = p.eps();
-        for (size_t i = 0; i < required_parsers.size(); i++) {
-            if (i > 0) {
-                args_seq = args_seq + p.space();
+        // Order required parsers according to the "required" array in the schema
+        std::vector<common_peg_parser> required_parsers;
+        for (const auto & rname : required_order) {
+            auto it = required_parser_map.find(rname);
+            if (it != required_parser_map.end()) {
+                required_parsers.push_back(std::move(it->second));
             }
-            args_seq = args_seq + required_parsers[i];
+        }
+
+        // Build required arg sequence with order-insensitive matching.
+        // For small sets we enumerate permutations exactly; for larger sets we fall back
+        // to a bounded-size approximation to avoid factorial grammar growth.
+        common_peg_parser args_seq = p.eps();
+        if (!required_parsers.empty()) {
+            if (required_parsers.size() <= 6) {
+                common_peg_parser           required_any_order = p.choice();
+                std::vector<bool>           used(required_parsers.size(), false);
+                std::vector<std::size_t>    order;
+                std::function<void(void)>   build_permutations;
+
+                build_permutations = [&]() {
+                    if (order.size() == required_parsers.size()) {
+                        common_peg_parser seq = p.eps();
+                        for (std::size_t i = 0; i < order.size(); ++i) {
+                            if (i > 0) {
+                                seq = seq + p.space();
+                            }
+                            seq = seq + required_parsers[order[i]];
+                        }
+                        required_any_order |= seq;
+                        return;
+                    }
+
+                    for (std::size_t i = 0; i < required_parsers.size(); ++i) {
+                        if (used[i]) {
+                            continue;
+                        }
+                        used[i] = true;
+                        order.push_back(i);
+                        build_permutations();
+                        order.pop_back();
+                        used[i] = false;
+                    }
+                };
+
+                build_permutations();
+                args_seq = required_any_order;
+            } else {
+                common_peg_parser any_required = p.choice();
+                for (const auto & req : required_parsers) {
+                    any_required |= req;
+                }
+                args_seq = any_required +
+                           p.repeat(p.space() + any_required,
+                                    static_cast<int>(required_parsers.size()) - 1,
+                                    static_cast<int>(required_parsers.size()) - 1);
+            }
         }
 
         // Build optional args with flexible ordering

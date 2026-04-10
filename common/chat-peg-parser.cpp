@@ -359,6 +359,17 @@ void common_chat_peg_mapper::map(const common_peg_ast_node & node) {
                 value_content = normalize_container_value(value_content);
             }
 
+            // Normalize boolean case variants (True, TRUE, False, FALSE) to JSON-compliant lowercase
+            {
+                auto copy_content = value_content;
+                std::transform(copy_content.begin(), copy_content.end(), copy_content.begin(), [](unsigned char c){ return std::tolower(c); });
+                if (copy_content == "true") {
+                    value_content = "true";
+                } else if (copy_content == "false") {
+                    value_content = "false";
+                }
+            }
+
             // Try to parse as JSON value (number, bool, null, object, array)
             try {
                 ordered_json parsed = ordered_json::parse(value_content);

@@ -1313,7 +1313,9 @@ common_peg_parser common_peg_parser_builder::json_string() {
 
 common_peg_parser common_peg_parser_builder::json_bool() {
     return rule("json-bool", [this]() {
-        return sequence({choice({literal("true"), literal("false")}), space()});
+        return sequence({choice({literal("true"), literal("false"),
+                                 literal("True"), literal("False"),
+                                 literal("TRUE"), literal("FALSE")}), space()});
     });
 }
 
