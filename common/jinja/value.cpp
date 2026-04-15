@@ -1001,31 +1001,73 @@ const func_builtins & value_array_t::get_builtins() const {
         }},
         {"tojson", tojson},
         {"map", [](const func_args & args) -> value {
-            args.ensure_count(2);
+            args.ensure_count(2, 999);
             if (!is_val<value_array>(args.get_pos(0))) {
                 throw raised_exception("map: first argument must be an array");
             }
-            if (!is_val<value_kwarg>(args.get_args().at(1))) {
-                throw not_implemented_exception("map: filter-mapping not implemented");
-            }
             value val       = args.get_pos(0);
-            value attribute = args.get_kwarg_or_pos("attribute", 1);
-            const bool attr_is_int = is_val<value_int>(attribute);
-            if (!is_val<value_string>(attribute) && !attr_is_int) {
-                throw raised_exception("map: attribute must be string or integer");
-            }
-            const int64_t attr_int = attr_is_int ? attribute->as_int() : 0;
-            value default_val = args.get_kwarg("default", mk_val<value_undefined>());
             auto out = mk_val<value_array>();
             auto arr = val->as_array();
-            for (const auto & item : arr) {
-                value attr_val;
-                if (attr_is_int) {
-                    attr_val = is_val<value_array>(item) ? item->at(attr_int, default_val) : default_val;
-                } else {
-                    attr_val = is_val<value_object>(item) ? item->at(attribute, default_val) : default_val;
+
+            if (is_val<value_kwarg>(args.get_args().at(1))) {
+                // map(attribute=..., default=...)
+                value attribute = args.get_kwarg_or_pos("attribute", 1);
+                const bool attr_is_int = is_val<value_int>(attribute);
+                if (!is_val<value_string>(attribute) && !attr_is_int) {
+                    throw raised_exception("map: attribute must be string or integer");
                 }
-                out->push_back(attr_val);
+                const int64_t attr_int = attr_is_int ? attribute->as_int() : 0;
+                value default_val = args.get_kwarg("default", mk_val<value_undefined>());
+
+                for (const auto & item : arr) {
+                    value attr_val;
+                    if (attr_is_int) {
+                        attr_val = is_val<value_array>(item) ? item->at(attr_int, default_val) : default_val;
+                    } else {
+                        attr_val = is_val<value_object>(item) ? item->at(attribute, default_val) : default_val;
+                    }
+                    out->push_back(attr_val);
+                }
+            } else {
+                // map("filter_name", ...)
+                value filter_name_val = args.get_pos(1);
+                if (!is_val<value_string>(filter_name_val)) {
+                    throw raised_exception("map: filter name must be a string");
+                }
+                std::string filter_name = filter_name_val->as_string().str();
+                if (filter_name == "trim") {
+                    filter_name = "strip";
+                }
+
+                for (const auto & item : arr) {
+                    value filter_input = item;
+                    if (!filter_input->is_undefined() && !is_val<value_string>(filter_input) && (
+                        filter_name == "capitalize" ||
+                        filter_name == "lower" ||
+                        filter_name == "replace" ||
+                        filter_name == "strip" ||
+                        filter_name == "title" ||
+                        filter_name == "upper" ||
+                        filter_name == "wordcount"
+                    )) {
+                        // Keep behavior aligned with direct filter application in runtime.cpp.
+                        filter_input = mk_val<value_string>(filter_input->as_string());
+                    }
+
+                    auto builtins = filter_input->get_builtins();
+                    auto it = builtins.find(filter_name);
+                    if (it == builtins.end()) {
+                        throw raised_exception("map: unknown filter '" + filter_name + "' for type " + filter_input->type());
+                    }
+
+                    func_args map_args(args.ctx);
+                    for (size_t i = 2; i < args.count(); ++i) {
+                        map_args.push_back(args.get_args().at(i));
+                    }
+
+                    value map_fn = mk_val<value_func>(filter_name, it->second, filter_input);
+                    out->push_back(map_fn->invoke(map_args));
+                }
             }
             return is_val<value_tuple>(val) ? mk_val<value_tuple>(std::move(out->as_array())) : out;
         }},
