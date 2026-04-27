@@ -980,9 +980,18 @@ void ggml_metal_device_event_free(ggml_metal_device_t dev, ggml_metal_event_t ev
 
 void ggml_metal_device_event_synchronize(ggml_metal_device_t dev, ggml_metal_event_t ev) {
     id<MTLSharedEvent> event = ev->obj;
-    const bool res = [event waitUntilSignaledValue:atomic_load_explicit(&ev->value, memory_order_relaxed) timeoutMS:60000];
-    if (!res) {
-        GGML_ABORT("%s: failed to wait for event\n", __func__);
+    if (@available(macOS 12.0, *)) {
+        const bool res = [event waitUntilSignaledValue:atomic_load_explicit(&ev->value, memory_order_relaxed) timeoutMS:60000];
+        if (!res) {
+            GGML_ABORT("%s: failed to wait for event\n", __func__);
+        }
+    } else {
+        @autoreleasepool {
+            id<MTLCommandBuffer> cmd_buf = [dev->mtl_queue commandBuffer];
+            [cmd_buf encodeWaitForEvent:event value:atomic_load_explicit(&ev->value, memory_order_relaxed)];
+            [cmd_buf commit];
+            [cmd_buf waitUntilCompleted];
+        }
     }
 
     GGML_UNUSED(dev);
